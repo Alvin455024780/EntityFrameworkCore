@@ -143,6 +143,11 @@ namespace Microsoft.EntityFrameworkCore.TestUtilities
         public void CascadeChanges(bool force) => throw new NotImplementedException();
         public void CascadeDelete(InternalEntityEntry entry, bool force) => throw new NotImplementedException();
 
+        public InternalEntityEntry TryGetEntry([NotNull] IKey key, object[] keyValues, bool throwOnNullKey, out bool hasNullKey)
+        {
+            throw new NotImplementedException();
+        }
+
         public IDiagnosticsLogger<DbLoggerCategory.Update> UpdateLogger { get; }
     }
 }
