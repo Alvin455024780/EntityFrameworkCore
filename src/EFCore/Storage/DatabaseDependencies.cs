@@ -97,7 +97,7 @@ namespace Microsoft.EntityFrameworkCore.Storage
 
         public DatabaseDependencies With([NotNull] IQueryCompilationContextFactory2 queryCompilationContextFactory2)
             => new DatabaseDependencies(QueryCompilationContextFactory,
-				UpdateAdapterFactory
+				UpdateAdapterFactory,
                 Check.NotNull(queryCompilationContextFactory2, nameof(queryCompilationContextFactory2)));
     }
 }
