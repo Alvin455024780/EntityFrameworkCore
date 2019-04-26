@@ -4591,6 +4591,22 @@ LEFT JOIN [LevelTwo] AS [join.OneToOne_Optional_FK1] ON [l1].[Id] = [join.OneToO
                 @"");
         }
 
+        public override void GroupBy_navigation_key_selector_expansion_in_source_simple_aggregate_in_projection()
+        {
+            base.GroupBy_navigation_key_selector_expansion_in_source_simple_aggregate_in_projection();
+
+            AssertSql(
+                @"");
+        }
+
+        public override void GroupBy_navigation_key_selector_expansion_in_source_key_and_simple_aggregate_in_projection()
+        {
+            base.GroupBy_navigation_key_selector_expansion_in_source_key_and_simple_aggregate_in_projection();
+
+            AssertSql(
+                @"");
+        }
+
         private void AssertSql(params string[] expected)
         {
             Fixture.TestSqlLoggerFactory.AssertBaseline(expected);

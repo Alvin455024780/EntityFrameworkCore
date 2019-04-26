@@ -6213,5 +6213,25 @@ namespace Microsoft.EntityFrameworkCore.Query
                 var result = query.ToList();
             }
         }
+
+        [ConditionalFact]
+        public virtual void GroupBy_navigation_key_selector_expansion_in_source_simple_aggregate_in_projection()
+        {
+            using (var ctx = CreateContext())
+            {
+                var query = ctx.LevelOne.Where(l1 => l1.OneToOne_Optional_FK1.Name != "Foo").GroupBy(k => k.Name).Select(x => x.Count());
+                var result = query.ToList();
+            }
+        }
+
+        [ConditionalFact]
+        public virtual void GroupBy_navigation_key_selector_expansion_in_source_key_and_simple_aggregate_in_projection()
+        {
+            using (var ctx = CreateContext())
+            {
+                var query = ctx.LevelOne.Where(l1 => l1.OneToOne_Optional_FK1.Name != "Foo").GroupBy(k => k.Name).Select(x => new { key = x.Key, aggregate = x.Count() });
+                var result = query.ToList();
+            }
+        }
     }
 }

@@ -60,6 +60,9 @@ namespace Microsoft.EntityFrameworkCore.Query.NavigationExpansion.Visitors
                 case nameof(Queryable.SelectMany):
                     return ProcessSelectMany(methodCallExpression);
 
+                case nameof(Queryable.GroupBy):
+                    return ProcessGroupBy(methodCallExpression);
+
                 case nameof(Queryable.All):
                     return ProcessAll(methodCallExpression);
 
@@ -661,6 +664,145 @@ namespace Microsoft.EntityFrameworkCore.Query.NavigationExpansion.Visitors
                 result.source,
                 result.state,
                 methodCallExpression.Type);
+        }
+
+        private Expression ProcessGroupBy(MethodCallExpression methodCallExpression)
+        {
+            if (methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.QueryableGroupByKeySelectorElementSelectorResultSelector)
+                || methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.QueryableGroupByKeySelectorResultSelector)
+                || methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.EnumerableGroupByKeySelectorElementSelectorResultSelector)
+                || methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.EnumerableGroupByKeySelectorResultSelector))
+            {
+                return ProcessGroupByWithResultSelector(methodCallExpression);
+            }
+
+            if (methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.QueryableGroupByKeySelector)
+                || methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.QueryableGroupByKeySelectorElementSelector)
+                || methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.EnumerableGroupByKeySelector)
+                || methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.EnumerableGroupByKeySelectorElementSelector))
+            {
+                return ProcessGroupByWithoutResultSelector(methodCallExpression);
+            }
+
+            throw new NotSupportedException("Unhandled Groupby Method: " + methodCallExpression);
+        }
+
+        private Expression ProcessGroupByWithResultSelector(MethodCallExpression methodCallExpression)
+        {
+            return methodCallExpression;
+        }
+
+        private Expression ProcessGroupByWithoutResultSelector(MethodCallExpression methodCallExpression)
+        {
+            var source = VisitSourceExpression(methodCallExpression.Arguments[0]);
+
+            var keySelector = methodCallExpression.Arguments[1].UnwrapQuote();
+            LambdaExpression elementSelector = null;
+
+            if (methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.QueryableGroupByKeySelectorElementSelector)
+                || methodCallExpression.Method.MethodIsClosedFormOf(LinqMethodHelpers.EnumerableGroupByKeySelectorElementSelector))
+            {
+                elementSelector = methodCallExpression.Arguments[2].UnwrapQuote();
+                AdjustCurrentParameterName(source.State, elementSelector.Parameters[0].Name);
+            }
+            else
+            {
+                AdjustCurrentParameterName(source.State, keySelector.Parameters[0].Name);
+            }
+
+            var appliedKeySelectorNavigationsResult = FindAndApplyNavigations(source.Operand, keySelector, source.State);
+            var appliedKeySelectorOrderingsResult = ApplyPendingOrderings(appliedKeySelectorNavigationsResult.source, appliedKeySelectorNavigationsResult.state);
+
+            var appliedNavigationsResult = (appliedKeySelectorOrderingsResult.source, lambdaBody: default(Expression), appliedKeySelectorOrderingsResult.state);
+
+            // push the key selector into the result grouping
+            // entities.GroupBy(e => e.Key, e => e.Element).Select(g => g.Count())
+            // gets converted to: entities.GroupBy(e => e.Key).Select(g => g.Select(e => e.Element).Count())
+            if (elementSelector != null)
+            {
+                var previousParameter = appliedNavigationsResult.state.CurrentParameter;
+                appliedNavigationsResult = FindAndApplyNavigations(appliedNavigationsResult.source, elementSelector, appliedNavigationsResult.state);
+                appliedKeySelectorNavigationsResult.lambdaBody = new ExpressionReplacingVisitor(previousParameter, appliedNavigationsResult.state.CurrentParameter).Visit(appliedKeySelectorNavigationsResult.lambdaBody);
+                appliedNavigationsResult.state.PendingSelector = Expression.Lambda(appliedNavigationsResult.lambdaBody, appliedNavigationsResult.state.CurrentParameter);
+            }
+
+            // TODO: make sure there is no nav expansion on the key - we have no way to support it because key selector 
+            var newKeySelectorBody = new NavigationPropertyUnbindingVisitor(appliedNavigationsResult.state.CurrentParameter).Visit(appliedKeySelectorNavigationsResult.lambdaBody);
+
+            var keyParameter = Expression.Parameter(newKeySelectorBody.Type, "key");
+            var groupingParameter = Expression.Parameter(typeof(IEnumerable<>).MakeGenericType(appliedNavigationsResult.state.CurrentParameter.Type), "grouping");
+            var grouping = new NavigationExpansionExpression(groupingParameter, appliedNavigationsResult.state, groupingParameter.Type);
+
+            var igroupingType = typeof(Grouping<,>).MakeGenericType(keyParameter.Type, appliedNavigationsResult.state.CurrentParameter.Type);
+            var igroupingCtor = igroupingType.GetTypeInfo().GetConstructors().Where(c => c.GetParameters().Length == 2).Single();
+
+            var resultSelectorBody = Expression.New(
+                igroupingCtor,
+                keyParameter,
+                grouping);
+
+            var resultSelector = Expression.Lambda(resultSelectorBody, keyParameter, groupingParameter);
+
+            if (elementSelector == null)
+            {
+                var groupingMethod = LinqMethodHelpers.QueryableGroupByKeySelectorResultSelector.MakeGenericMethod(
+                    appliedNavigationsResult.state.CurrentParameter.Type,
+                    keyParameter.Type,
+                    resultSelectorBody.Type);
+
+                var rewritten = Expression.Call(
+                    groupingMethod,
+                    appliedNavigationsResult.source,
+                    Expression.Lambda(newKeySelectorBody, appliedNavigationsResult.state.CurrentParameter),
+                    resultSelector);
+
+                var igroupingParameter = Expression.Parameter(igroupingType, "groupby");
+
+                var newState = new NavigationExpansionExpressionState(
+                    igroupingParameter,
+                    appliedNavigationsResult.state.SourceMappings.ToList(),
+                    Expression.Lambda(igroupingParameter, igroupingParameter),
+                    applyPendingSelector: true,
+                    appliedNavigationsResult.state.PendingOrderings,
+                    appliedNavigationsResult.state.PendingIncludeChain,
+                    appliedNavigationsResult.state.PendingCardinalityReducingOperator,
+                    appliedNavigationsResult.state.PendingTags,
+                    appliedNavigationsResult.state.CustomRootMappings.ToList(),
+                    materializeCollectionNavigation: null);
+
+                // IEnumerable for enumerables!
+                return new NavigationExpansionExpression(rewritten, newState, typeof(IQueryable<>).MakeGenericType(igroupingType));
+            }
+
+            //var keyMapping = new List<string> { nameof(TransparentIdentifier<object, object>.Outer) };
+            //var groupingMapping = new List<string> { nameof(TransparentIdentifier<object, object>.Inner) };
+
+            //var resultType = typeof(TransparentIdentifier<,>).MakeGenericType(keyParameter.Type, grouping.Type);
+            //var transparentIdentifierCtorInfo = resultType.GetTypeInfo().GetConstructors().Single();
+
+            //var resultSelectorBody = Expression.New(
+            //    transparentIdentifierCtorInfo,
+            //    keyParameter,
+            //    grouping);
+
+            //var transparentIdentifierParameter = Expression.Parameter(resultType, "groupBy");
+
+            //var groupingType = typeof(Grouping<,>).MakeGenericType(keyParameter.Type, grouping.Type);
+            //var groupingCtor = groupingType.GetTypeInfo().GetConstructors().Where(c => c.GetParameters().Length == 2).Single();
+            //var pendingSelectorBody = Expression.New(
+            //    groupingCtor,
+            //    Expression.PropertyOrField()
+            //    new CustomRootExpression(transparentIdentifierParameter, keyMapping, keyParameter.Type),
+            //    new NavigationExpansionRootExpression(
+
+
+
+
+            //    new NavigationExpansionRootExpression(, groupingMapping));
+
+            //var resultSelector = Expression.Lambda(resultSelectorBody, keyParameter, groupingParameter);
+
+            return methodCallExpression;
         }
 
         private Expression ProcessAll(MethodCallExpression methodCallExpression)
