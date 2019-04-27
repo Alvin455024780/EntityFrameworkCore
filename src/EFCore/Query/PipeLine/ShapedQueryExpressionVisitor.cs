@@ -6,10 +6,11 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore.ChangeTracking.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Internal;
-using Microsoft.EntityFrameworkCore.Query.Internal;
 using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Microsoft.EntityFrameworkCore.Query.Pipeline
@@ -24,15 +25,25 @@ namespace Microsoft.EntityFrameworkCore.Query.Pipeline
             = typeof(Enumerable).GetTypeInfo().GetDeclaredMethods(nameof(Enumerable.SingleOrDefault))
                 .Single(mi => mi.GetParameters().Length == 1);
 
+        private static readonly PropertyInfo _cancellationTokenMemberInfo
+                = typeof(QueryContext).GetProperty(nameof(QueryContext.CancellationToken));
+
         private readonly IEntityMaterializerSource _entityMaterializerSource;
         private readonly bool _trackQueryResults;
+        private readonly Expression cancellationTokenParameter;
+        protected readonly bool Async;
 
-        protected static Expression MoveNextMarker = new MoveNextExpression();
-
-        public ShapedQueryCompilingExpressionVisitor(IEntityMaterializerSource entityMaterializerSource, bool trackQueryResults)
+        public ShapedQueryCompilingExpressionVisitor(IEntityMaterializerSource entityMaterializerSource, bool trackQueryResults, bool async)
         {
             _entityMaterializerSource = entityMaterializerSource;
             _trackQueryResults = trackQueryResults;
+            Async = async;
+            if (async)
+            {
+                cancellationTokenParameter = Expression.MakeMemberAccess(
+                    QueryCompilationContext2.QueryContextParameter,
+                    _cancellationTokenMemberInfo);
+            }
         }
 
         protected override Expression VisitExtension(Expression extensionExpression)
@@ -47,14 +58,26 @@ namespace Microsoft.EntityFrameworkCore.Query.Pipeline
                             return serverEnumerable;
 
                         case ResultType.Single:
-                            return Expression.Call(
-                                _singleMethodInfo.MakeGenericMethod(serverEnumerable.Type.TryGetSequenceType()),
-                                serverEnumerable);
+                            return Async
+                                ? Expression.Call(
+                                    _singleAsyncMethodInfo.MakeGenericMethod(serverEnumerable.Type.TryGetSequenceType()),
+                                    serverEnumerable,
+                                    QueryCompilationContext2.QueryContextParameter,
+                                    cancellationTokenParameter)
+                                : Expression.Call(
+                                    _singleMethodInfo.MakeGenericMethod(serverEnumerable.Type.TryGetSequenceType()),
+                                    serverEnumerable);
 
                         case ResultType.SingleWithDefault:
-                            return Expression.Call(
-                                _singleOrDefaultMethodInfo.MakeGenericMethod(serverEnumerable.Type.TryGetSequenceType()),
-                                serverEnumerable);
+                            return Async
+                                ? Expression.Call(
+                                    _singleOrDefaultAsyncMethodInfo.MakeGenericMethod(serverEnumerable.Type.TryGetSequenceType()),
+                                    serverEnumerable,
+                                    QueryCompilationContext2.QueryContextParameter,
+                                    cancellationTokenParameter)
+                                : Expression.Call(
+                                    _singleOrDefaultMethodInfo.MakeGenericMethod(serverEnumerable.Type.TryGetSequenceType()),
+                                    serverEnumerable);
                     }
 
                     break;
@@ -63,14 +86,54 @@ namespace Microsoft.EntityFrameworkCore.Query.Pipeline
             return base.VisitExtension(extensionExpression);
         }
 
-        protected class MoveNextExpression : Expression
-        {
-            protected override Expression VisitChildren(ExpressionVisitor visitor)
-            {
-                return this;
-            }
+        private static readonly MethodInfo _singleAsyncMethodInfo
+            = typeof(ShapedQueryCompilingExpressionVisitor).GetTypeInfo()
+                .GetDeclaredMethods(nameof(ShapedQueryCompilingExpressionVisitor.SingleAsync))
+                .Single(mi => mi.GetParameters().Length == 2);
 
-            public override ExpressionType NodeType => ExpressionType.Extension;
+        private static readonly MethodInfo _singleOrDefaultAsyncMethodInfo
+            = typeof(ShapedQueryCompilingExpressionVisitor).GetTypeInfo()
+                .GetDeclaredMethods(nameof(ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync))
+                .Single(mi => mi.GetParameters().Length == 2);
+
+        private async static Task<TSource> SingleAsync<TSource>(
+            IAsyncEnumerable<TSource> asyncEnumerable,
+            CancellationToken cancellationToken = default)
+        {
+            using (var enumerator = asyncEnumerable.GetEnumerator())
+            {
+                if (!(await enumerator.MoveNext(cancellationToken)))
+                {
+                    throw new InvalidOperationException();
+                }
+
+                var result = enumerator.Current;
+
+                if (await enumerator.MoveNext(cancellationToken))
+                {
+                    throw new InvalidOperationException();
+                }
+                return result;
+            }
+        }
+
+        private async static Task<TSource> SingleOrDefaultAsync<TSource>(IAsyncEnumerable<TSource> asyncEnumerable)
+        {
+            using (var enumerator = asyncEnumerable.GetEnumerator())
+            {
+                if (!(await enumerator.MoveNext()))
+                {
+                    return default;
+                }
+
+                var result = enumerator.Current;
+
+                if (await enumerator.MoveNext())
+                {
+                    throw new InvalidOperationException();
+                }
+                return result;
+            }
         }
 
         protected abstract Expression VisitShapedQueryExpression(ShapedQueryExpression shapedQueryExpression);
@@ -79,12 +142,12 @@ namespace Microsoft.EntityFrameworkCore.Query.Pipeline
             LambdaExpression lambdaExpression)
         {
             return new EntityMaterializerInjectingExpressionVisitor(
-                _entityMaterializerSource, _trackQueryResults).Inject(lambdaExpression);
+                _entityMaterializerSource, _trackQueryResults, Async).Inject(lambdaExpression);
         }
 
         private class EntityMaterializerInjectingExpressionVisitor : ExpressionVisitor
         {
-            private IDictionary<EntityShaperExpression, ParameterExpression> _entityCache
+            private readonly IDictionary<EntityShaperExpression, ParameterExpression> _entityCache
                 = new Dictionary<EntityShaperExpression, ParameterExpression>();
 
             private static readonly ConstructorInfo _materializationContextConstructor
@@ -96,6 +159,9 @@ namespace Microsoft.EntityFrameworkCore.Query.Pipeline
                 = typeof(QueryContext).GetProperty(nameof(QueryContext.StateManager));
             private static readonly PropertyInfo _entityMemberInfo
                 = typeof(InternalEntityEntry).GetProperty(nameof(InternalEntityEntry.Entity));
+            private static readonly MethodInfo _taskFromResultMethodInfo
+                = typeof(Task).GetTypeInfo().GetDeclaredMethods(nameof(Task.FromResult))
+                    .Single();
 
             private static readonly MethodInfo _tryGetEntryMethodInfo
                 = typeof(IStateManager).GetTypeInfo().GetDeclaredMethods(nameof(IStateManager.TryGetEntry))
@@ -105,26 +171,40 @@ namespace Microsoft.EntityFrameworkCore.Query.Pipeline
 
             private readonly IEntityMaterializerSource _entityMaterializerSource;
             private readonly bool _trackQueryResults;
+            private readonly bool _async;
 
             private readonly List<ParameterExpression> _variables = new List<ParameterExpression>();
             private readonly List<Expression> _expressions = new List<Expression>();
             private int _currentEntityIndex;
 
             public EntityMaterializerInjectingExpressionVisitor(
-                IEntityMaterializerSource entityMaterializerSource, bool trackQueryResults)
+                IEntityMaterializerSource entityMaterializerSource, bool trackQueryResults, bool async)
             {
                 _entityMaterializerSource = entityMaterializerSource;
                 _trackQueryResults = trackQueryResults;
+                _async = async;
             }
 
             public LambdaExpression Inject(LambdaExpression lambdaExpression)
             {
                 var modifiedBody = Visit(lambdaExpression.Body);
-                var resultVariable = Expression.Variable(lambdaExpression.ReturnType, "result");
-                _variables.Add(resultVariable);
-                _expressions.Add(Expression.Assign(resultVariable, modifiedBody));
-                _expressions.Add(MoveNextMarker);
-                _expressions.Add(resultVariable);
+                if (_async)
+                {
+                    var resultVariable = Expression.Variable(typeof(Task<>).MakeGenericType(lambdaExpression.ReturnType), "result");
+                    _variables.Add(resultVariable);
+                    _expressions.Add(Expression.Assign(resultVariable,
+                        Expression.Call(
+                            _taskFromResultMethodInfo.MakeGenericMethod(lambdaExpression.ReturnType),
+                            modifiedBody)));
+                    _expressions.Add(resultVariable);
+                }
+                else
+                {
+                    var resultVariable = Expression.Variable(lambdaExpression.ReturnType, "result");
+                    _variables.Add(resultVariable);
+                    _expressions.Add(Expression.Assign(resultVariable, modifiedBody));
+                    _expressions.Add(resultVariable);
+                }
 
                 return Expression.Lambda(Expression.Block(_variables, _expressions), lambdaExpression.Parameters);
             }

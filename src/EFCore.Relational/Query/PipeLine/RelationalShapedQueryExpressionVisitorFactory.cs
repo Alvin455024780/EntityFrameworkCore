@@ -24,7 +24,8 @@ namespace Microsoft.EntityFrameworkCore.Relational.Query.Pipeline
             return new RelationalShapedQueryCompilingExpressionVisitor(
                 _entityMaterializerSource,
                 _querySqlGeneratorFactory,
-                queryCompilationContext.TrackQueryResults);
+                queryCompilationContext.TrackQueryResults,
+                queryCompilationContext.Async);
         }
     }
 }

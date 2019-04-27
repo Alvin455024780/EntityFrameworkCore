@@ -18,8 +18,8 @@ namespace Microsoft.EntityFrameworkCore.InMemory.Query.Pipeline
 {
     public class InMemoryShapedQueryCompilingExpressionVisitor : ShapedQueryCompilingExpressionVisitor
     {
-        public InMemoryShapedQueryCompilingExpressionVisitor(IEntityMaterializerSource entityMaterializerSource, bool trackQueryResults)
-            : base(entityMaterializerSource, trackQueryResults)
+        public InMemoryShapedQueryCompilingExpressionVisitor(IEntityMaterializerSource entityMaterializerSource, bool trackQueryResults, bool async)
+            : base(entityMaterializerSource, trackQueryResults, async)
         {
         }
 
@@ -55,11 +55,6 @@ namespace Microsoft.EntityFrameworkCore.InMemory.Query.Pipeline
             var newBody = new InMemoryProjectionBindingRemovingExpressionVisitor(
                 (InMemoryQueryExpression)shapedQueryExpression.QueryExpression)
                 .Visit(shaperLambda.Body);
-
-            newBody = ReplacingExpressionVisitor.Replace(
-                MoveNextMarker,
-                Expression.Assign(hasNextParameter, Expression.Call(enumeratorParameter, _enumeratorMoveNextMethodInfo)),
-                newBody);
 
             newBody = ReplacingExpressionVisitor.Replace(
                 InMemoryQueryExpression.ValueBufferParameter,

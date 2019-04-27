@@ -92,23 +92,19 @@ namespace Microsoft.EntityFrameworkCore.Storage
                 .CreateQueryModelVisitor()
                 .CreateAsyncQueryExecutor<TResult>(Check.NotNull(queryModel, nameof(queryModel)));
 
-        public virtual Func<QueryContext, TResult> CompileQuery2<TResult>(Expression query)
+        public virtual Func<QueryContext, TResult> CompileQuery2<TResult>(Expression query, bool async)
         {
             try
             {
                 return Dependencies.QueryCompilationContextFactory2
-                    .Create(async: false)
+                    .Create(async)
                     .CreateQueryExecutor<TResult>(query);
             }
             catch (Exception e)
             {
                 if (e is NotImplementedException)
                 {
-#pragma warning disable CS8603 // Possible null reference return.
-#pragma warning disable CS8653 // Nullable reference
                     return qc => default;
-#pragma warning restore CS8603 // Possible null reference return.
-#pragma warning restore CS8653 // Nullable reference
                 }
 
                 throw;

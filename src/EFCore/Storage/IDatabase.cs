@@ -67,6 +67,6 @@ namespace Microsoft.EntityFrameworkCore.Storage
         /// <returns> A function that will asynchronously execute the query. </returns>
         Func<QueryContext, IAsyncEnumerable<TResult>> CompileAsyncQuery<TResult>([NotNull] QueryModel queryModel);
 
-        Func<QueryContext, TResult> CompileQuery2<TResult>([NotNull] Expression query);
+        Func<QueryContext, TResult> CompileQuery2<TResult>([NotNull] Expression query, bool async);
     }
 }

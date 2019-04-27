@@ -144,43 +144,12 @@ namespace Microsoft.EntityFrameworkCore.Extensions
                 _expectedMethodCall = expectedMethodCall;
             }
 
-            public Task<TResult> ExecuteAsync<TResult>(Expression expression, CancellationToken cancellationToken)
-            {
-                var actualMethodCall = (MethodCallExpression)expression;
-
-                Assert.Equal(
-                    _expectedMethodCall.Method.Name,
-                    actualMethodCall.Method.Name + "Async");
-
-                var cancellationTokenPresent
-                    = (_expectedMethodCall.Arguments[_expectedMethodCall.Arguments.Count - 1] is MemberExpression lastArgument)
-                      && (lastArgument.Type == typeof(CancellationToken));
-
-                if (cancellationTokenPresent)
-                {
-                    Assert.NotEqual(cancellationToken, CancellationToken.None);
-                }
-                else
-                {
-                    Assert.Equal(cancellationToken, CancellationToken.None);
-                }
-
-                for (var i = 1; i < _expectedMethodCall.Arguments.Count - 1; i++)
-                {
-                    var expectedArgument = _expectedMethodCall.Arguments[i];
-                    var actualArgument = actualMethodCall.Arguments[i];
-
-                    Assert.Equal(expectedArgument.ToString(), actualArgument.ToString());
-                }
-
-                return Task.FromResult(default(TResult));
-            }
-
             public IQueryable CreateQuery(Expression expression) => throw new NotImplementedException();
             public IQueryable<TElement> CreateQuery<TElement>(Expression expression) => throw new NotImplementedException();
             public object Execute(Expression expression) => throw new NotImplementedException();
             public TResult Execute<TResult>(Expression expression) => throw new NotImplementedException();
-            public TResult ExecuteAsync<TResult>(Expression expression) => throw new NotImplementedException();
+            public TResult ExecuteAsync<TResult>(Expression expression, CancellationToken cancellationToken = default)
+                => throw new NotImplementedException();
         }
 
         private class FakeQueryable<TElement> : IQueryable<TElement>
